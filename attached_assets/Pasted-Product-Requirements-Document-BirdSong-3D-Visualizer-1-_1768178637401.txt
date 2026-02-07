@@ -1,0 +1,329 @@
+Product Requirements Document: BirdSong 3D Visualizer
+​
+
+1. Product overview
+Product name
+BirdSong 3D Visualizer
+
+Goal
+Enable users to upload a bird song (or any audio clip) and see an evolving 3D point network that encodes the structure of the sound (pitch, timbre, time) in a browser‑based, automated visualization inspired by “Visualizing Bird Songs.”
+​
+
+Primary users
+
+Creators, sound designers, and nature/audio enthusiasts who want to explore how bird vocalizations “look” in 3D.
+​
+
+Musicians who want a non‑traditional visual score for sonic material.
+
+Platforms
+
+Web app deployable on Replit or similar “vibe code” environments (e.g., Vercel‑style hosting).
+
+2. User stories
+As a user, I can upload a short audio file (birdsong or music, max ~30–60 seconds) and see a unique 3D visualization generated from it.
+
+As a user, I can play and pause the audio and watch the 3D network evolve in sync with playback.
+
+As a user, I can rotate, zoom, and pan the camera around the 3D structure.
+
+As a user, I can choose between multiple visual styles (for example “Network”, “Galaxy cloud”, “Ribbons”).
+
+As a user, I can see per‑section labels (for example “Verse 1”, “Verse 2”) corresponding to segmented phrases in the audio.
+
+As a power user, I can toggle a debug or overlay panel that shows underlying audio features at the current time cursor (pitch, spectral centroid, energy).
+
+3. Functional requirements
+3.1 Audio ingestion
+Accept audio file formats: WAV, MP3, M4A.
+
+Enforce file size and duration limits (for example duration ≤ 60 seconds, size ≤ 20 MB).
+
+Validate file type and duration on upload; surface clear error messages for unsupported formats or oversized files.
+
+Store uploaded audio temporarily for analysis (in memory or temporary disk).
+
+3.2 Feature extraction (backend)
+Backend implemented in Python using a lightweight web framework.
+
+Core operations
+
+Resample audio to a common sample rate (for example 22050 Hz).
+
+Compute STFT to obtain a magnitude spectrogram.
+
+Estimate pitch per frame (for example using librosa.yin or librosa.piptrack).
+
+Compute per‑frame spectral features:
+
+spectral_centroid
+
+spectral_bandwidth
+
+spectral_contrast or spectral_rolloff
+
+Compute onset envelope and detect onset times.
+
+Optionally compute band‑energy in low/mid/high frequency bands.
+
+Segmentation into “verses”
+
+Segment the audio into phrases (“verses”) using silence thresholds and/or onset density.
+
+Each verse has a start time, end time, and an ordered list of frames.
+
+Backend JSON output schema (raw features)
+Example shape (exact values and field names may be refined during implementation):
+
+json
+{
+  "sample_rate": 22050,
+  "duration": 12.34,
+  "verses": [
+    {
+      "id": 0,
+      "start": 0.5,
+      "end": 2.1,
+      "frames": [
+        {
+          "t": 0.0,
+          "pitch": 1234.5,
+          "centroid": 3456.7,
+          "bandwidth": 890.1,
+          "amplitude": 0.8,
+          "onset_strength": 0.3
+        }
+      ]
+    }
+  ]
+}
+3.3 Mapping audio features to 3D geometry
+This step can be done in the backend or frontend; PRD assumes the backend produces a visualization‑ready JSON.
+
+Normalization per verse
+
+Normalize time 
+t
+t within a verse to.
+​
+
+Normalize pitch on a log scale to.
+​
+
+Normalize spectral centroid and bandwidth to.
+​
+
+Normalize amplitude and onset strength to.
+​
+
+Coordinate mapping
+
+x = normalized time within verse.
+
+y = normalized pitch.
+
+z = normalized spectral centroid or a derived timbre feature.
+
+Visual styles (initial set)
+
+Style: “Network”
+
+Construct a feature vector per point (for example [pitch, centroid, time]).
+
+Use k‑nearest neighbors (k configurable, for example 3–5) to create edges between nearby points.
+
+Produce a graph‑like 3D network.
+
+Style: “Spiral/Galaxy”
+
+Map normalized time to angle and radius in cylindrical coordinates.
+
+Convert to 3D with pitch controlling height and timbre controlling radial distance.
+
+Color and size mapping
+
+Color: derive HSL/RGB from spectral centroid and bandwidth (for example warmer colors for brighter timbres).
+
+Size: derive from amplitude or onset strength (larger points for more energetic events).
+
+Visualization JSON schema (frontend‑ready)
+
+json
+{
+  "audioUrl": "/media/audio/uuid.wav",
+  "verses": [
+    {
+      "id": 0,
+      "name": "Verse 1",
+      "points": [
+        {
+          "x": 0.1,
+          "y": 0.7,
+          "z": 0.3,
+          "size": 1.2,
+          "color": [0.4, 0.8, 1.0],
+          "time": 0.53
+        }
+      ],
+      "edges": [[0, 1], [1, 2], [2, 5]]
+    }
+  ]
+}
+3.4 3D rendering and interaction (frontend)
+Technology
+
+JavaScript/TypeScript web front end.
+
+Three.js (or React‑Three‑Fiber on top of Three.js) for 3D rendering.
+
+Core frontend behavior
+
+Display a file upload interface.
+
+On upload, call backend /analyze endpoint and receive visualization JSON.
+
+Load and play the audio from audioUrl using an <audio> element.
+
+Use Three.js to render:
+
+Points as instanced spheres or billboards.
+
+Edges as lines connecting points as defined in edges.
+
+Provide camera controls (OrbitControls) for rotation, zoom, and pan.
+
+Synchronize audio playback with the visualization:
+
+Listen to timeupdate events from the audio element.
+
+Highlight points whose time is near the current playback time (for example within a window of ±50–100 ms).
+
+UI elements
+
+Play/Pause button and simple time scrubber.
+
+Dropdown or toggle for visual style (Network, Galaxy, Ribbons).
+
+Optional: verse labels on a simple horizontal timeline (start/end markers).
+
+Optional: debug mode that shows numeric feature values for the currently highlighted point(s).
+
+3.5 Performance constraints
+Restrict audio duration to ensure the analysis completes within ~5–10 seconds for a 30‑second clip on Replit‑class hardware.
+
+Downsample the number of visualization points if necessary (for example cap at 10,000 points per audio).
+
+Provide a simplified rendering mode (fewer points, no edges) for lower‑powered or mobile devices.
+
+4. Non‑functional requirements
+Latency
+
+Time from file upload to first frame of visualization should be ≤ 10–15 seconds for a 30‑second audio file under typical conditions.
+
+Reliability
+
+Handle unsupported formats and oversize files gracefully.
+
+Return clear, user‑friendly error messages.
+
+Security
+
+Enforce upload size limits.
+
+Sanitize and randomize file names.
+
+Avoid executing any code from user uploads.
+
+Accessibility
+
+Provide keyboard controls for play/pause (for example spacebar).
+
+Maintain sufficient color contrast and consider color‑blind‑friendly palettes.
+
+5. Tech stack
+5.1 Backend
+Language: Python 3
+
+Framework: FastAPI (preferred) or Flask
+
+Core libraries:
+
+librosa (audio loading and feature extraction)
+
+numpy, scipy
+
+pydantic (for request/response schemas)
+
+scikit‑learn (optional, for k‑nearest neighbors and clustering)
+
+API endpoints
+
+POST /analyze
+
+Input: multipart/form‑data with an audio file field.
+
+Behavior:
+
+Validate and store uploaded file temporarily.
+
+Run feature extraction and segmentation.
+
+Map features to normalized 3D coordinates.
+
+Return visualization JSON including audioUrl.
+
+GET /health
+
+Simple health check endpoint returning status.
+
+5.2 Frontend
+For Replit:
+
+Single repository containing both backend and frontend.
+
+Static files (HTML/CSS/JS) served by the Python backend or via a static directory.
+
+Core tools:
+
+HTML for base structure, CSS (or Tailwind) for styling.
+
+Vanilla JS or React for UI and API calls.
+
+Three.js for 3D visualization.
+
+6. Implementation milestones
+MVP backend
+
+Implement /health endpoint.
+
+Implement /analyze with audio upload, basic validation, feature extraction, and verse segmentation.
+
+Return a minimal visualization JSON with a single verse and a small number of points (no edges required initially).
+
+MVP frontend
+
+Implement file upload UI and call to /analyze.
+
+Display basic 3D scatter (points only) using Three.js.
+
+Add audio playback with synchronized highlighting of active points.
+
+Visual style enhancements
+
+Add support for edges and the “Network” style.
+
+Add at least one alternate style (for example “Galaxy” with spiral mapping).
+
+Implement smooth camera orbit or idle motion.
+
+UX and controls
+
+Add style selection, verse markers, and debug overlay.
+
+Add loading states and error states.
+
+Deployment and polish
+
+Configure for Replit (or similar) with a single run command.
+
+Optimize performance (downsampling, caching intermediate computations where possible).

@@ -1,0 +1,95 @@
+Debugging: make visuals match frequency
+Verify feature → axis mapping
+
+Confirm what you use for “frequency”:
+
+Prefer a true pitch estimate (e.g., librosa.yin or librosa.piptrack output).
+
+If you use FFT bins, convert bin index to Hz using sample rate and FFT size.
+
+Make the mapping explicit and consistent:
+
+y-axis = pitch in Hz or log-Hz (height should represent frequency).
+
+x-axis = time within verse/clip.
+
+z-axis = spectral centroid or another clear feature (not a mix of random values).
+
+Sanity check:
+
+Log a few frames: print or console.log the raw pitch values and their mapped y positions to confirm monotonic relationship.
+
+Normalize per feature (per verse/clip), not per frame
+
+Compute min/max for each feature over a verse or the whole clip:
+
+pitch_min, pitch_max
+
+centroid_min, centroid_max
+
+energy_min, energy_max
+
+Normalize once per feature:
+
+norm = (value - min) / (max - min + epsilon)
+
+Use a log scale for pitch:
+
+pitch_log = log(pitch_hz)
+
+Normalize pitch_log to and map that to y.
+​
+
+Check that:
+
+The same note in different parts of the clip maps to the same approximate y-height.
+
+Extreme low/high frequencies map to bottom/top of your pitch range consistently.
+
+Fix time alignment with audio playback
+
+Store exact time for each frame/point:
+
+time_seconds = frame_index * hop_length / sample_rate
+
+Save this as point.time in your JSON.
+
+Drive activation from audio.currentTime:
+
+In the render loop:
+
+currentTime = audio.currentTime
+
+active = abs(point.time - currentTime) < window
+
+Use window ≈ 0.05–0.1 seconds.
+
+Do NOT reorder points after generation:
+
+Keep the same order and time values so the correct point is active at the correct moment.
+
+Debug:
+
+Log currentTime and the time of the currently highlighted point to ensure they are close.
+
+Smooth features but keep structure
+
+Add light temporal smoothing:
+
+For each feature curve (pitch, centroid, energy), apply:
+
+Moving average over 2–4 frames, or
+
+Exponential moving average:
+
+smoothed[i] = alpha * raw[i] + (1 - alpha) * smoothed[i - 1]
+
+use alpha ~0.3–0.7.
+
+Apply smoothing BEFORE normalization and mapping to coordinates.
+
+Don’t over-smooth:
+
+Keep short chirps and fast changes recognizable.
+
+Verify visually/with logs that sharp jumps in frequency still produce visible moves, just without jitter.

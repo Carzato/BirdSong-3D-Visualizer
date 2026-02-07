@@ -1,0 +1,128 @@
+Improving smooth flow and accurate mapping from audio
+Problem
+The MVP looks jerky or “off” because:
+
+Audio features are noisy.
+
+Visuals are driven directly from raw frame values.
+
+Time alignment between audio and points is loose.
+
+Goal
+Achieve smoother, more “intentional” motion and more accurate audio→visual mapping through:
+
+Better feature extraction.
+
+Temporal smoothing.
+
+Eased animation and precise timing.
+
+Clean up audio features
+
+Use stable features instead of raw FFT bins:
+
+Pitch (YIN or piptrack).
+
+Spectral features: centroid, bandwidth, contrast/rolloff.
+
+RMS energy and onset strength.
+
+Downsample in time:
+
+Analyze every ~20–30 ms, then average over 2–4 frames to reduce jitter.
+
+Apply temporal smoothing:
+
+Run a moving average or exponential smoothing over pitch, centroid, energy, and onset strength before normalization.
+
+Segment and structure the song
+
+Detect onsets and silence:
+
+Segment the audio into phrases/verses using onset density and silence thresholds.
+
+Work per verse:
+
+Build separate point networks per verse instead of one long undifferentiated cloud.
+
+Normalize features within each verse so shapes look coherent inside a segment but distinct between segments.
+
+Optional clustering:
+
+Cluster frames (e.g., k-means on [pitch, centroid, energy]) into a few motif types to create more stable structures instead of random scatter.
+
+Smooth the animation layer
+
+Do not directly set visual parameters to feature values frame-by-frame.
+
+Use target vs current values:
+
+For each property (x, y, z, scale, color), keep:
+
+currentValue
+
+targetValue (from audio features)
+
+Each frame: currentValue += (targetValue - currentValue) * smoothingFactor
+
+smoothingFactor in the range 0.05–0.2 works well.
+
+Apply easing:
+
+When moving camera, scaling points, or changing colors, use easing functions (ease-in, ease-out, ease-in-out) instead of linear interpolation.
+
+Clamp step size:
+
+Limit how much a property can change per frame to avoid sudden jumps.
+
+Tighten time alignment with audio
+
+Drive everything from audio time:
+
+Use the audio element’s currentTime as the source of truth.
+
+Store precise time per point:
+
+Each point has a time field (seconds).
+
+In the render loop, compute its activation as:
+
+active = abs(point.time - audio.currentTime) < window
+
+window ~0.05–0.1 seconds.
+
+Avoid rebuilding geometry:
+
+Precompute all points once.
+
+On each frame, only update attributes (scale, color, opacity, glow) based on how close point.time is to audio.currentTime.
+
+Visual design tweaks for perceived smoothness
+
+More, smaller particles:
+
+Prefer many small particles with subtle motion instead of a few large, jumpy ones.
+
+Add base motion:
+
+Add slow noise-based drift to positions so points gently move even when audio is quiet.
+
+Smooth camera motion:
+
+Use a slow orbit or dolly with easing; avoid abrupt camera jumps, which make any residual jitter more noticeable.
+
+Implementation priority checklist
+Add feature smoothing:
+
+Moving average / EMA over pitch, centroid, energy, onset strength.
+
+Segment into verses:
+
+Build separate structures and normalize features within each verse.
+
+Introduce target/current + smoothingFactor in the render loop.
+
+Switch to audio currentTime for activation and only modify attributes per frame.
+
+Add base drift and eased camera motion for extra smoothness.
+

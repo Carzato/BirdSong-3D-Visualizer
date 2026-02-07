@@ -1,0 +1,150 @@
+Debug plan: make each sound light up its own region
+Goal
+Move from a single global beat driving all points to:
+
+Separate low/mid/high bands before onset detection.
+
+Drive activation from band-specific onset strengths instead of one global beatStrength.
+
+Keep the existing pitch/centroid mapping, but make activation and regions more meaningful.
+​
+
+Log per-band values frame-by-frame
+
+Goal: confirm that bandLow/bandMid/bandHigh and onsetLow/onsetMid/onsetHigh are actually different over time.
+​
+
+In the frame extraction loop, pick a small time window (e.g. first 3 seconds) and log:
+
+frame.t
+
+bandLow, bandMid, bandHigh
+
+onsetLow, onsetMid, onsetHigh
+
+Inspect logs:
+
+Do you see moments where bandLow spikes but bandHigh does not?
+
+If all three bands move together, band boundaries are too broad or the track itself is dominated by a global beat.
+​
+
+Visualize which band was picked per point
+
+Goal: verify that pickDominantBand(...) is making different decisions over time.
+​
+
+Temporarily color points by band only (ignore existing color mapping):
+
+low band -> red
+
+mid band -> green
+
+high band -> blue
+
+In Three.js mapping:
+
+ts
+let r = 0, g = 0, b = 0;
+if (point.band === 'low')  r = 1;
+if (point.band === 'mid')  g = 1;
+if (point.band === 'high') b = 1;
+
+colors[i * 3]     = r;
+colors[i * 3 + 1] = g;
+colors[i * 3 + 2] = b;
+If you mostly see one color, band selection is effectively global.
+
+Visualize onsets directly (ignore activation for a moment)
+
+Goal: check that onsets per band are actually sparse and local.
+​
+
+In the render loop, override activation to be only based on onset, ignoring timeWindow:
+
+ts
+const onsetStrength = Math.max(0, point.onset - onsetThreshold);
+const activation = Math.min(1, onsetStrength * gainFactor); // e.g. gainFactor ~ 10–50
+
+// no time-based gating, just onset
+Expected outcome:
+
+Only a subset of points should be large/bright at any given frame.
+
+If everything is always “on”, onset calculation is too flat; lower EMA smoothing or increase onsetThreshold.
+​
+
+Narrow timeWindow and make activation relative, not absolute
+
+Goal: break the “global pulse” feel by normalizing within a local window.
+​
+
+Use a tighter window:
+
+ts
+const timeWindow = 0.03; // 30ms
+Make activation relative to the strongest onset in that neighborhood:
+
+ts
+// First pass: find max onset near currentTime
+let maxOnset = 0;
+for (const point of points) {
+  const dt = Math.abs(point.time - currentTime);
+  if (dt < timeWindow) {
+    maxOnset = Math.max(maxOnset, point.onset);
+  }
+}
+
+// Second pass: compute normalized activation per point
+for (const point of points) {
+  const dt = Math.abs(point.time - currentTime);
+  let activation = 0;
+
+  if (dt < timeWindow && maxOnset > 0) {
+    const timeFalloff = 1 - (dt / timeWindow) ** 2;
+    const normOnset   = point.onset / maxOnset; // 0–1 within this local window
+    activation = normOnset * timeFalloff;
+  }
+
+  activation = Math.min(1, activation);
+
+  // use activation for size/alpha
+  const baseSize = point.size;
+  const pulseSize = baseSize + activation * 0.6;
+  sizes[i] = pulseSize;
+
+  const baseAlpha = 0.3;
+  alphas[i] = baseAlpha + activation * 0.7;
+}
+This ensures that, at any moment, only the relatively strongest band(s) flare up instead of every band pulsing together.
+​
+
+Amplify spatial separation so differences are obvious
+
+Goal: visually exaggerate band differences so you can see them even if the audio separation isn’t perfect.
+​
+
+Increase bandOffsetZ and/or add a bandOffsetX or ring layout:
+
+ts
+let bandOffsetZ = 0;
+if (point.band === 'low')  bandOffsetZ = -0.8;
+if (point.band === 'mid')  bandOffsetZ = 0.0;
+if (point.band === 'high') bandOffsetZ = 0.8;
+
+positions[i * 3]     = (point.x - 0.5) * scale * 2;
+positions[i * 3 + 1] = (point.y - 0.5) * scale;
+positions[i * 3 + 2] = (point.z - 0.5) * scale + bandOffsetZ * scale;
+Optionally, give each band its own “ring” around the origin based on band so band differences are obvious in the layout.
+​
+
+Accept limits and know when you need source separation
+
+With only the mixed track, FFT magnitude, and simple band splits, you cannot fully isolate “kick vs snare vs hi-hat vs synth” like stems.
+​
+
+For closer to true instrument-level behavior:
+
+Use pre-separated audio stems (drums / bass / vocals) and run the pipeline per stem.
+
+Or preprocess with a source separation model (e.g. Demucs/Spleeter) to get multiple tracks you visualize separately (heavier, but much more separation)
