@@ -3,23 +3,18 @@ import path from "path";
 import ffmpeg from "fluent-ffmpeg";
 import { randomUUID } from "crypto";
 import os from "os";
+import { Matrix, EigenvalueDecomposition } from "ml-matrix";
 
 interface AudioFrame {
   t: number;
-  pitch: number;
-  centroid: number;
-  bandwidth: number;
-  amplitude: number;
-  onsetStrength: number;
-  spectralFlux: number;
-  spectralFlatness: number;
-  beatStrength: number;
-  bandLow: number;
-  bandMid: number;
-  bandHigh: number;
-  onsetLow: number;
-  onsetMid: number;
-  onsetHigh: number;
+  mfccs: number[];
+  pcaCoordinates?: {
+    x: number;
+    y: number;
+    z: number;
+  };
+  frequency?: number;
+  amplitude?: number;
 }
 
 interface VisualizationPoint {
@@ -29,11 +24,15 @@ interface VisualizationPoint {
   size: number;
   color: [number, number, number];
   time: number;
-  beatStrength: number;
-  complexity: number;
-  band: 'low' | 'mid' | 'high';
-  bandOffsetZ: number;
-  onset: number;
+  mfccs: number[];
+  frequency?: number;
+  beatStrength?: number;
+  complexity?: number;
+  band?: 'low' | 'mid' | 'high';
+  bandOffsetZ?: number;
+  onsetLow?: number;
+  onsetMid?: number;
+  onsetHigh?: number;
 }
 
 interface Verse {
@@ -242,166 +241,247 @@ function computeBandEnergies(
   return { low, mid, high };
 }
 
-function computeBandOnsets(frames: AudioFrame[]): void {
-  if (frames.length < 2) return;
-  
-  let prevLow = frames[0].bandLow;
-  let prevMid = frames[0].bandMid;
-  let prevHigh = frames[0].bandHigh;
-
-  for (let i = 0; i < frames.length; i++) {
-    const f = frames[i];
-
-    const dLow = Math.max(0, f.bandLow - prevLow);
-    const dMid = Math.max(0, f.bandMid - prevMid);
-    const dHigh = Math.max(0, f.bandHigh - prevHigh);
-
-    f.onsetLow = dLow;
-    f.onsetMid = dMid;
-    f.onsetHigh = dHigh;
-
-    prevLow = f.bandLow;
-    prevMid = f.bandMid;
-    prevHigh = f.bandHigh;
-  }
-  
-  const maxOnsetLow = Math.max(...frames.map(f => f.onsetLow), 0.001);
-  const maxOnsetMid = Math.max(...frames.map(f => f.onsetMid), 0.001);
-  const maxOnsetHigh = Math.max(...frames.map(f => f.onsetHigh), 0.001);
-  
-  for (const f of frames) {
-    f.onsetLow /= maxOnsetLow;
-    f.onsetMid /= maxOnsetMid;
-    f.onsetHigh /= maxOnsetHigh;
-  }
+// Mel scale conversion functions
+function hzToMel(hz: number): number {
+  return 2595 * Math.log10(1 + hz / 700);
 }
 
-function applyTemporalSmoothing(frames: AudioFrame[]): void {
-  if (frames.length < 3) return;
-  
-  const alpha = 0.5;
-  
-  let smoothPitch = frames[0].pitch;
-  let smoothCentroid = frames[0].centroid;
-  let smoothAmplitude = frames[0].amplitude;
-  let smoothBandwidth = frames[0].bandwidth;
-  let smoothBandLow = frames[0].bandLow;
-  let smoothBandMid = frames[0].bandMid;
-  let smoothBandHigh = frames[0].bandHigh;
-  
-  for (let i = 0; i < frames.length; i++) {
-    smoothPitch = alpha * frames[i].pitch + (1 - alpha) * smoothPitch;
-    smoothCentroid = alpha * frames[i].centroid + (1 - alpha) * smoothCentroid;
-    smoothAmplitude = alpha * frames[i].amplitude + (1 - alpha) * smoothAmplitude;
-    smoothBandwidth = alpha * frames[i].bandwidth + (1 - alpha) * smoothBandwidth;
-    smoothBandLow = alpha * frames[i].bandLow + (1 - alpha) * smoothBandLow;
-    smoothBandMid = alpha * frames[i].bandMid + (1 - alpha) * smoothBandMid;
-    smoothBandHigh = alpha * frames[i].bandHigh + (1 - alpha) * smoothBandHigh;
-    
-    frames[i].pitch = smoothPitch;
-    frames[i].centroid = smoothCentroid;
-    frames[i].amplitude = smoothAmplitude;
-    frames[i].bandwidth = smoothBandwidth;
-    frames[i].bandLow = smoothBandLow;
-    frames[i].bandMid = smoothBandMid;
-    frames[i].bandHigh = smoothBandHigh;
-  }
+function melToHz(mel: number): number {
+  return 700 * (Math.pow(10, mel / 2595) - 1);
 }
 
-function detectBeats(frames: AudioFrame[], sampleRate: number): void {
-  if (frames.length < 10) return;
-  
-  const fluxValues = frames.map(f => f.spectralFlux);
-  const maxFlux = Math.max(...fluxValues);
-  if (maxFlux === 0) return;
-  
-  const normalizedFlux = fluxValues.map(f => f / maxFlux);
-  
-  const windowSize = Math.min(10, Math.floor(frames.length / 4));
-  const threshold: number[] = [];
-  
-  for (let i = 0; i < frames.length; i++) {
-    const start = Math.max(0, i - windowSize);
-    const end = Math.min(frames.length, i + windowSize + 1);
+// Create Mel filterbank
+function createMelFilterbank(
+  numFilters: number,
+  fftSize: number,
+  sampleRate: number,
+  lowFreq: number = 0,
+  highFreq?: number
+): number[][] {
+  highFreq = highFreq || sampleRate / 2;
+
+  const lowMel = hzToMel(lowFreq);
+  const highMel = hzToMel(highFreq);
+  const melPoints = Array.from(
+    { length: numFilters + 2 },
+    (_, i) => lowMel + (i * (highMel - lowMel)) / (numFilters + 1)
+  );
+
+  const hzPoints = melPoints.map(melToHz);
+  const binPoints = hzPoints.map(hz => Math.floor((fftSize + 1) * hz / sampleRate));
+
+  const filterbank: number[][] = [];
+  for (let i = 1; i <= numFilters; i++) {
+    const filter = new Array(Math.floor(fftSize / 2) + 1).fill(0);
+
+    const left = binPoints[i - 1];
+    const center = binPoints[i];
+    const right = binPoints[i + 1];
+
+    for (let j = left; j < center; j++) {
+      filter[j] = (j - left) / (center - left);
+    }
+    for (let j = center; j < right; j++) {
+      filter[j] = (right - j) / (right - center);
+    }
+
+    filterbank.push(filter);
+  }
+
+  return filterbank;
+}
+
+// Discrete Cosine Transform
+function dct(input: number[], numCoefficients: number): number[] {
+  const N = input.length;
+  const output: number[] = [];
+
+  for (let k = 0; k < numCoefficients; k++) {
     let sum = 0;
-    for (let j = start; j < end; j++) {
-      sum += normalizedFlux[j];
+    for (let n = 0; n < N; n++) {
+      sum += input[n] * Math.cos((Math.PI * k * (n + 0.5)) / N);
     }
-    const mean = sum / (end - start);
-    threshold[i] = mean * 1.3 + 0.1;
+    output.push(sum);
   }
-  
-  for (let i = 1; i < frames.length - 1; i++) {
-    const isPeak = normalizedFlux[i] > normalizedFlux[i - 1] && 
-                   normalizedFlux[i] >= normalizedFlux[i + 1];
-    const aboveThreshold = normalizedFlux[i] > threshold[i];
-    
-    if (isPeak && aboveThreshold) {
-      frames[i].beatStrength = Math.min(1, normalizedFlux[i] * 1.5);
+
+  return output;
+}
+
+// Extract MFCCs from audio frame
+function extractMFCCs(
+  samples: Float32Array,
+  start: number,
+  frameSize: number,
+  sampleRate: number,
+  numMFCCs: number = 40
+): number[] {
+  // Apply FFT
+  const fft = computeFFT(samples, start, frameSize);
+
+  // Create mel filterbank (26 filters is standard)
+  const numFilters = 26;
+  const filterbank = createMelFilterbank(numFilters, frameSize, sampleRate);
+
+  // Apply filterbank to power spectrum
+  const melEnergies: number[] = [];
+  for (const filter of filterbank) {
+    let energy = 0;
+    for (let i = 0; i < fft.length; i++) {
+      energy += (fft[i] * fft[i]) * filter[i];
+    }
+    // Take log of energy (add small epsilon to avoid log(0))
+    melEnergies.push(Math.log(energy + 1e-10));
+  }
+
+  // Apply DCT to get MFCCs
+  const mfccs = dct(melEnergies, numMFCCs);
+
+  return mfccs;
+}
+
+// Calculate dominant frequency from FFT
+function calculateDominantFrequency(fft: Float32Array, sampleRate: number, fftSize: number): number {
+  let maxMag = 0;
+  let maxBin = 0;
+
+  for (let i = 1; i < fft.length; i++) {
+    if (fft[i] > maxMag) {
+      maxMag = fft[i];
+      maxBin = i;
     }
   }
-  
-  const beatStrengths = frames.map(f => f.beatStrength);
-  const maxBeatStrength = Math.max(...beatStrengths);
-  if (maxBeatStrength > 0) {
-    for (const frame of frames) {
-      frame.beatStrength = frame.beatStrength / maxBeatStrength;
-    }
-  }
+
+  return (maxBin * sampleRate) / fftSize;
 }
 
 function extractAudioFrames(samples: Float32Array, sampleRate: number): AudioFrame[] {
-  const frameSize = 2048;
-  const hopSize = 512;
-  const fftSize = 512;
+  const frameSize = 512;
+  const hopSize = 256;  // 50% overlap
   const numFrames = Math.floor((samples.length - frameSize) / hopSize);
   const frames: AudioFrame[] = [];
-  
-  let prevRMS = 0;
-  let prevFFT: Float32Array | null = null;
-  
+
   for (let i = 0; i < numFrames; i++) {
     const start = i * hopSize;
     const t = start / sampleRate;
-    
+
+    // Extract 40 MFCCs
+    const mfccs = extractMFCCs(samples, start, frameSize, sampleRate, 40);
+
+    // Calculate amplitude for point sizing
     const amplitude = computeRMS(samples, start, frameSize);
-    const zcr = computeZeroCrossingRate(samples, start, frameSize);
-    const pitch = estimatePitchFromZCR(zcr, sampleRate);
-    
-    const fft = computeFFT(samples, start, fftSize);
-    const { centroid, bandwidth } = computeSpectralFeatures(fft, fftSize, sampleRate);
-    const spectralFlux = computeSpectralFlux(fft, prevFFT);
-    const spectralFlatness = computeSpectralFlatness(fft);
-    const onsetStrength = computeOnsetStrength(prevRMS, amplitude);
-    const bandEnergies = computeBandEnergies(fft, fftSize, sampleRate);
-    
+
+    // Calculate dominant frequency for coloring
+    const fft = computeFFT(samples, start, frameSize);
+    const frequency = calculateDominantFrequency(fft, sampleRate, frameSize);
+
     frames.push({
       t,
-      pitch,
-      centroid,
-      bandwidth,
+      mfccs,
       amplitude,
-      onsetStrength,
-      spectralFlux,
-      spectralFlatness,
-      beatStrength: 0,
-      bandLow: bandEnergies.low,
-      bandMid: bandEnergies.mid,
-      bandHigh: bandEnergies.high,
-      onsetLow: 0,
-      onsetMid: 0,
-      onsetHigh: 0,
+      frequency,
     });
-    
-    prevRMS = amplitude;
-    prevFFT = fft;
   }
-  
-  applyTemporalSmoothing(frames);
-  computeBandOnsets(frames);
-  detectBeats(frames, sampleRate);
-  
+
   return frames;
+}
+
+// Expected MFCC dimension (must match extractMFCCs output length)
+const PCA_MFCC_DIM = 40;
+
+// Fallback 3D from first 3 MFCCs when PCA cannot be applied
+function fallbackPcaCoordinates(frames: AudioFrame[]): AudioFrame[] {
+  return frames.map((frame) => ({
+    ...frame,
+    pcaCoordinates: {
+      x: (frame.mfccs[0] ?? 0) * 0.1,
+      y: (frame.mfccs[1] ?? 0) * 0.1,
+      z: (frame.mfccs[2] ?? 0) * 0.1,
+    },
+  }));
+}
+
+// Apply PCA to reduce MFCC dimensions from 40 to 3
+function applyPCA(frames: AudioFrame[]): AudioFrame[] {
+  if (frames.length === 0) return frames;
+
+  try {
+    // Normalize every frame to exactly PCA_MFCC_DIM coefficients (pad or truncate)
+    // to avoid "Matrices dimensions must be equal" from jagged or inconsistent lengths
+    const mfccData = frames.map((frame) => {
+      const m = frame.mfccs;
+      if (m.length === PCA_MFCC_DIM) return [...m];
+      if (m.length > PCA_MFCC_DIM) return m.slice(0, PCA_MFCC_DIM);
+      const row = [...m];
+      while (row.length < PCA_MFCC_DIM) row.push(0);
+      return row;
+    });
+
+    const mfccMatrix = new Matrix(mfccData);
+    const numCols = mfccMatrix.columns;
+    if (numCols !== PCA_MFCC_DIM) return fallbackPcaCoordinates(frames);
+    if (frames.length < 2) return fallbackPcaCoordinates(frames);
+
+    // Center the data (subtract mean from each column)
+    const means = mfccMatrix.mean('column');
+    const centered = mfccMatrix.clone();
+    for (let col = 0; col < centered.columns; col++) {
+      for (let row = 0; row < centered.rows; row++) {
+        centered.set(row, col, centered.get(row, col) - means[col]);
+      }
+    }
+
+    // Compute covariance matrix (symmetric: numCols x numCols)
+    const transposed = centered.transpose();
+    const covariance = transposed.mmul(centered).div(frames.length - 1);
+
+    // Eigenvalue decomposition (covariance is symmetric by construction)
+    const evd = new EigenvalueDecomposition(covariance, { assumeSymmetric: true });
+    const eigenvectors = evd.eigenvectorMatrix;
+    const eigenvalues = evd.realEigenvalues;
+
+    if (eigenvectors.rows !== numCols || eigenvectors.columns !== numCols) {
+      return fallbackPcaCoordinates(frames);
+    }
+
+    // Sort eigenvectors by eigenvalues (descending)
+    const sorted = eigenvalues
+      .map((val, idx) => ({ val, idx }))
+      .sort((a, b) => b.val - a.val);
+
+    // Get top 3 principal components
+    const numComponents = 3;
+    const principalComponents = new Matrix(eigenvectors.rows, numComponents);
+    for (let i = 0; i < numComponents; i++) {
+      const colIdx = sorted[i].idx;
+      for (let row = 0; row < eigenvectors.rows; row++) {
+        principalComponents.set(row, i, eigenvectors.get(row, colIdx));
+      }
+    }
+
+    // Project: centered (frames x numCols) * principalComponents (numCols x 3)
+    const projected = centered.mmul(principalComponents);
+
+    // Normalize coordinates to reasonable range for visualization
+    const maxRange = Math.max(
+      Math.max(...projected.getColumn(0).map(Math.abs)),
+      Math.max(...projected.getColumn(1).map(Math.abs)),
+      Math.max(...projected.getColumn(2).map(Math.abs))
+    );
+
+    const scale = maxRange > 0 ? 5 / maxRange : 1;
+
+    return frames.map((frame, i) => ({
+      ...frame,
+      pcaCoordinates: {
+        x: projected.get(i, 0) * scale,
+        y: projected.get(i, 1) * scale,
+        z: projected.get(i, 2) * scale,
+      }
+    }));
+  } catch {
+    // On any error (e.g. "Matrices dimensions must be equal"), use fallback 3D
+    return fallbackPcaCoordinates(frames);
+  }
 }
 
 function segmentIntoVerses(frames: AudioFrame[], duration: number): { start: number; end: number; frames: AudioFrame[] }[] {
@@ -409,9 +489,9 @@ function segmentIntoVerses(frames: AudioFrame[], duration: number): { start: num
   
   if (frames.length === 0) return verses;
 
-  const maxAmp = Math.max(...frames.map(f => f.amplitude));
+  const maxAmp = Math.max(...frames.map(f => f.amplitude || 0));
   const silenceThreshold = maxAmp * 0.1;
-  
+
   let verseStart = 0;
   let verseFrames: AudioFrame[] = [];
   let inSilence = false;
@@ -420,7 +500,7 @@ function segmentIntoVerses(frames: AudioFrame[], duration: number): { start: num
   const minVerseDuration = 0.3;
 
   for (const frame of frames) {
-    const isSilent = frame.amplitude < silenceThreshold;
+    const isSilent = (frame.amplitude || 0) < silenceThreshold;
 
     if (isSilent && !inSilence) {
       inSilence = true;
@@ -510,16 +590,11 @@ function findKNearestNeighbors(points: VisualizationPoint[], k: number): [number
   return edges;
 }
 
-function pickDominantBand(frame: AudioFrame): { band: 'low' | 'mid' | 'high'; onset: number } {
-  const { bandLow, bandMid, bandHigh } = frame;
-
-  if (bandMid >= bandLow && bandMid >= bandHigh) {
-    return { band: 'mid', onset: frame.onsetMid };
-  } else if (bandLow >= bandMid && bandLow >= bandHigh) {
-    return { band: 'low', onset: frame.onsetLow };
-  } else {
-    return { band: 'high', onset: frame.onsetHigh };
-  }
+// Map frequency to hue for color coding (red/orange/yellow gradient)
+function mapFrequencyToHue(frequency: number): number {
+  // Map frequency range 0-10kHz to hue 0-60° (red→orange→yellow)
+  const normalized = Math.min(frequency / 10000, 1);
+  return normalized * 60;
 }
 
 function mapFramesToVisualization(
@@ -527,65 +602,44 @@ function mapFramesToVisualization(
   duration: number
 ): Verse[] {
   const allFrames = verseSegments.flatMap(v => v.frames);
-  
+
   if (allFrames.length === 0) {
     return [];
   }
 
-  const pitchValues = allFrames.map(f => Math.log2(Math.max(1, f.pitch)));
-  const pitchMin = Math.min(...pitchValues);
-  const pitchMax = Math.max(...pitchValues);
-  const centroidMin = Math.min(...allFrames.map(f => f.centroid));
-  const centroidMax = Math.max(...allFrames.map(f => f.centroid));
-  const bandwidthMin = Math.min(...allFrames.map(f => f.bandwidth));
-  const bandwidthMax = Math.max(...allFrames.map(f => f.bandwidth));
-  const amplitudeMax = Math.max(...allFrames.map(f => f.amplitude));
+  const amplitudeMax = Math.max(...allFrames.map(f => f.amplitude || 0));
 
   return verseSegments.map((segment, verseIndex) => {
-    const verseDuration = segment.end - segment.start;
-
     const maxPoints = 400;
     const step = Math.max(1, Math.floor(segment.frames.length / maxPoints));
     const sampledFrames = segment.frames.filter((_, i) => i % step === 0);
 
     const points: VisualizationPoint[] = sampledFrames.map(frame => {
-      const normalizedTime = verseDuration > 0 ? (frame.t - segment.start) / verseDuration : 0;
+      // Use PCA coordinates directly
+      const { x, y, z } = frame.pcaCoordinates || { x: 0, y: 0, z: 0 };
 
-      const normalizedPitch = normalizeValue(Math.log2(Math.max(1, frame.pitch)), pitchMin, pitchMax);
-      const normalizedCentroid = normalizeValue(frame.centroid, centroidMin, centroidMax);
-      const normalizedBandwidth = normalizeValue(frame.bandwidth, bandwidthMin, bandwidthMax);
-      const normalizedAmplitude = amplitudeMax > 0 ? frame.amplitude / amplitudeMax : 0;
+      // Frequency-based color (match video: red/orange/yellow)
+      const hue = mapFrequencyToHue(frame.frequency || 0);
+      const saturation = 0.8;
+      const lightness = 0.6;
 
-      const hue = normalizedCentroid;
-      const saturation = 0.7 + normalizedBandwidth * 0.3;
-      const lightness = 0.4 + normalizedAmplitude * 0.4;
-      
-      const complexity = (1 - frame.spectralFlatness) * normalizedBandwidth;
-
-      const { band } = pickDominantBand(frame);
-      
-      let bandOffsetZ = 0;
-      if (band === 'low') bandOffsetZ = -0.8;
-      if (band === 'mid') bandOffsetZ = 0;
-      if (band === 'high') bandOffsetZ = 0.8;
+      // Size based on amplitude
+      const normalizedAmplitude = amplitudeMax > 0 ? (frame.amplitude || 0) / amplitudeMax : 0.5;
+      const size = 0.05 + normalizedAmplitude * 0.15;
 
       return {
-        x: normalizedTime,
-        y: normalizedPitch,
-        z: normalizedCentroid,
-        size: 0.3 + normalizedAmplitude * 0.7,
+        x,
+        y,
+        z,
+        size,
         color: [hue, saturation, lightness] as [number, number, number],
         time: frame.t,
-        beatStrength: frame.beatStrength,
-        complexity,
-        band,
-        bandOffsetZ,
-        onsetLow: frame.onsetLow,
-        onsetMid: frame.onsetMid,
-        onsetHigh: frame.onsetHigh,
+        mfccs: frame.mfccs,
+        frequency: frame.frequency,
       };
     });
 
+    // Compute k-nearest neighbors based on Euclidean distance in 3D PCA space
     const edges = points.length > 1 ? findKNearestNeighbors(points, 3) : [];
 
     return {
@@ -650,11 +704,14 @@ export async function analyzeAudioFile(filePath: string): Promise<AnalysisResult
     }
     
     const duration = samples.length / sampleRate;
-    
+
     const frames = extractAudioFrames(samples, sampleRate);
-    
-    const verseSegments = segmentIntoVerses(frames, duration);
-    
+
+    // Apply PCA to reduce 40D MFCCs to 3D coordinates
+    const framesWithPCA = applyPCA(frames);
+
+    const verseSegments = segmentIntoVerses(framesWithPCA, duration);
+
     const verses = mapFramesToVisualization(verseSegments, duration);
     
     return {

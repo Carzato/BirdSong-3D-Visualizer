@@ -2,20 +2,14 @@ import { z } from "zod";
 
 export const audioFrameSchema = z.object({
   t: z.number(),
-  pitch: z.number(),
-  centroid: z.number(),
-  bandwidth: z.number(),
-  amplitude: z.number(),
-  onsetStrength: z.number(),
-  spectralFlux: z.number(),
-  spectralFlatness: z.number(),
-  beatStrength: z.number(),
-  bandLow: z.number(),
-  bandMid: z.number(),
-  bandHigh: z.number(),
-  onsetLow: z.number(),
-  onsetMid: z.number(),
-  onsetHigh: z.number(),
+  mfccs: z.array(z.number()),
+  pcaCoordinates: z.object({
+    x: z.number(),
+    y: z.number(),
+    z: z.number(),
+  }).optional(),
+  frequency: z.number().optional(),
+  amplitude: z.number().optional(),
 });
 
 export const visualizationPointSchema = z.object({
@@ -25,13 +19,15 @@ export const visualizationPointSchema = z.object({
   size: z.number(),
   color: z.tuple([z.number(), z.number(), z.number()]),
   time: z.number(),
-  beatStrength: z.number(),
-  complexity: z.number(),
-  band: z.enum(['low', 'mid', 'high']),
-  bandOffsetZ: z.number(),
-  onsetLow: z.number(),
-  onsetMid: z.number(),
-  onsetHigh: z.number(),
+  mfccs: z.array(z.number()),
+  frequency: z.number().optional(),
+  beatStrength: z.number().optional(),
+  complexity: z.number().optional(),
+  band: z.enum(['low', 'mid', 'high']).optional(),
+  bandOffsetZ: z.number().optional(),
+  onsetLow: z.number().optional(),
+  onsetMid: z.number().optional(),
+  onsetHigh: z.number().optional(),
 });
 
 export const verseSchema = z.object({

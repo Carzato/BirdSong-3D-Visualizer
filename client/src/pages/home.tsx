@@ -5,7 +5,9 @@ import { ControlPanel } from "@/components/control-panel";
 import { FloatingSettings } from "@/components/floating-settings";
 import { DebugPanel } from "@/components/debug-panel";
 import { LoadingOverlay } from "@/components/loading-overlay";
-import type { VisualizationData, VisualizationSettings } from "@shared/schema";
+import { MFCCPanel } from "@/components/mfcc-panel";
+import { FrequencyScale } from "@/components/frequency-scale";
+import type { VisualizationData, VisualizationSettings, VisualizationPoint } from "@shared/schema";
 
 export default function Home() {
   const [visualizationData, setVisualizationData] = useState<VisualizationData | null>(null);
@@ -13,6 +15,7 @@ export default function Home() {
   const [loadingMessage, setLoadingMessage] = useState("Analyzing audio...");
   const [currentTime, setCurrentTime] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [selectedPoint, setSelectedPoint] = useState<VisualizationPoint | null>(null);
   const [settings, setSettings] = useState<VisualizationSettings>({
     visualStyle: "network",
     autoRotate: true,
@@ -74,6 +77,10 @@ export default function Home() {
     }
   }, [handleSettingsChange]);
 
+  const handlePointHover = useCallback((point: VisualizationPoint | null) => {
+    setSelectedPoint(point);
+  }, []);
+
   if (!visualizationData) {
     return (
       <div className="relative min-h-screen bg-gradient-radial from-background via-background to-black flex items-center justify-center">
@@ -96,7 +103,11 @@ export default function Home() {
         currentTime={currentTime}
         isPlaying={isPlaying}
         settings={settings}
+        onPointHover={handlePointHover}
       />
+
+      <FrequencyScale />
+      <MFCCPanel selectedPoint={selectedPoint} />
 
       <FloatingSettings
         settings={settings}

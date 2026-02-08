@@ -100,20 +100,32 @@ function PointsVisualization({ data, currentTime, settings }: PointsVisualizatio
     const baseColors: THREE.Color[] = [];
 
     allPoints.forEach((point, i) => {
-      const scale = settings.visualStyle === "galaxy" ? 8 : 5;
-      
-      if (settings.visualStyle === "galaxy") {
-        const angle = point.x * Math.PI * 4;
-        const radius = (0.3 + point.z * 0.7) * scale;
-        positions[i * 3] = Math.cos(angle) * radius;
-        positions[i * 3 + 1] = (point.y - 0.5) * scale * 0.5;
-        positions[i * 3 + 2] = Math.sin(angle) * radius + point.bandOffsetZ * scale;
+      // Use PCA coordinates directly (already scaled appropriately)
+      // Fall back to old transformation if coordinates seem to be in 0-1 range
+      const isPcaCoords = Math.abs(point.x) > 2 || Math.abs(point.y) > 2 || Math.abs(point.z) > 2;
+
+      if (isPcaCoords) {
+        // Direct PCA coordinates (already in world space)
+        positions[i * 3] = point.x;
+        positions[i * 3 + 1] = point.y;
+        positions[i * 3 + 2] = point.z;
       } else {
-        positions[i * 3] = (point.x - 0.5) * scale * 2;
-        positions[i * 3 + 1] = (point.y - 0.5) * scale;
-        positions[i * 3 + 2] = (point.z - 0.5) * scale + point.bandOffsetZ * scale;
+        // Legacy transformation for old-style normalized coordinates
+        const scale = settings.visualStyle === "galaxy" ? 8 : 5;
+
+        if (settings.visualStyle === "galaxy") {
+          const angle = point.x * Math.PI * 4;
+          const radius = (0.3 + point.z * 0.7) * scale;
+          positions[i * 3] = Math.cos(angle) * radius;
+          positions[i * 3 + 1] = (point.y - 0.5) * scale * 0.5;
+          positions[i * 3 + 2] = Math.sin(angle) * radius + (point.bandOffsetZ || 0) * scale;
+        } else {
+          positions[i * 3] = (point.x - 0.5) * scale * 2;
+          positions[i * 3 + 1] = (point.y - 0.5) * scale;
+          positions[i * 3 + 2] = (point.z - 0.5) * scale + (point.bandOffsetZ || 0) * scale;
+        }
       }
-      
+
       basePositions[i * 3] = positions[i * 3];
       basePositions[i * 3 + 1] = positions[i * 3 + 1];
       basePositions[i * 3 + 2] = positions[i * 3 + 2];
@@ -234,31 +246,31 @@ function PointsVisualization({ data, currentTime, settings }: PointsVisualizatio
       const point = allPoints[i];
       const dt = Math.abs(point.time - currentTime);
       if (dt < timeWindow) {
-        maxOnsetLow = Math.max(maxOnsetLow, point.onsetLow);
-        maxOnsetMid = Math.max(maxOnsetMid, point.onsetMid);
-        maxOnsetHigh = Math.max(maxOnsetHigh, point.onsetHigh);
+        maxOnsetLow = Math.max(maxOnsetLow, point.onsetLow || 0);
+        maxOnsetMid = Math.max(maxOnsetMid, point.onsetMid || 0);
+        maxOnsetHigh = Math.max(maxOnsetHigh, point.onsetHigh || 0);
       }
     }
 
     allPoints.forEach((point, i) => {
       const dt = Math.abs(point.time - currentTime);
-      
-      const bandOnset = point.band === 'low' ? point.onsetLow 
-                      : point.band === 'mid' ? point.onsetMid 
-                      : point.onsetHigh;
-      const maxOnset = point.band === 'low' ? maxOnsetLow 
-                     : point.band === 'mid' ? maxOnsetMid 
+
+      const bandOnset = point.band === 'low' ? (point.onsetLow || 0)
+                      : point.band === 'mid' ? (point.onsetMid || 0)
+                      : (point.onsetHigh || 0);
+      const maxOnset = point.band === 'low' ? maxOnsetLow
+                     : point.band === 'mid' ? maxOnsetMid
                      : maxOnsetHigh;
-      
+
       let activation = 0;
       if (dt < timeWindow && maxOnset > 0.01) {
         const timeFalloff = 1 - (dt / timeWindow) * (dt / timeWindow);
         const normOnset = bandOnset / maxOnset;
         activation = Math.min(1, normOnset * timeFalloff);
       }
-      
-      const beatBoost = point.beatStrength * activation;
-      const complexityBoost = point.complexity * 0.2;
+
+      const beatBoost = (point.beatStrength || 0) * activation;
+      const complexityBoost = (point.complexity || 0) * 0.2;
       const targetIntensity = activation + beatBoost * 1.5;
 
       const isVisible = !settings.progressiveReveal || point.time <= currentTime + revealLeadTime;
